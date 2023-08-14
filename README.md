@@ -24,7 +24,8 @@ Run the client application:
 ./client
 
 It is possible to provide file name and server IP as arguments for the client application launch:
-./client <file name> <IP address in IPv4 format>
+
+./client <"file name"> <"IP address in IPv4 format">
 
 After receiving file client exits, server application still runs waiting for the next connection. Use Ctrl-C to exit.
 **************************************************************************************************************************************************
