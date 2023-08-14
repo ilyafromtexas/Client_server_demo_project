@@ -9,6 +9,7 @@ Server code is written to support multiple sockets using POSIX thread approach.
 ***************************************************************************************************************************************************
 
 How to compile and use server and client application
+
 Client:
 gcc client.c -o client
 
