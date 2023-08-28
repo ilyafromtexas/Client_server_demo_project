@@ -21,6 +21,37 @@
 #define BUFFER_SIZE 1024
 #define UPDATE_REQUEST_SIZE 2048
 
+//Function to connect to the server
+int connectToServer(const char *server_ip){
+    int socket_fd;
+    struct sockaddr_in server_addr;
+
+    // Creating TCP socket
+    if ((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+        perror("Invalid address");
+        close(socket_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Connecting to the server
+    if (connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("Connection failed");
+        close(socket_fd);        
+        exit(EXIT_FAILURE);
+    }
+
+    return socket_fd;
+
+}
+
+
 // Function to handle file download
 void downloadFile(int client_fd, const char *file_name) {
     char response[BUFFER_SIZE];
@@ -117,28 +148,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    int client_fd;
-    struct sockaddr_in server_addr;
+    int client_fd = connectToServer(server_ip);
 
-    // Creating TCP socket
-    if ((client_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
-    }
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
-        perror("Invalid address");
-        exit(EXIT_FAILURE);
-    }
-
-    // Connecting to the server
-    if (connect(client_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Connection failed");
-        exit(EXIT_FAILURE);
-    }
-
+    
     // Check if the file exists on the client side
     FILE *file = fopen(file_name, "rb");
     if (file == NULL) {
