@@ -31,7 +31,7 @@ It is possible to provide file name and server IP as arguments for the client ap
 
 If <IP addrfess> is not provided as argument, server uses default IP address.
 
-After receiving file client exits, server application still runs waiting for the next connection. Use Ctrl-C to exit.
+After receiving file or update, client requests if the user wants to do another request. If No, client exits, but server application still runs waiting for the next connection. Use Ctrl-C to exit.
 **************************************************************************************************************************************************
 Limitations
 Applications run using default port 12345. Necessary to change according to the configuration.
