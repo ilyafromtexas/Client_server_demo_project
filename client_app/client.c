@@ -1,3 +1,5 @@
+// Client application. It requests file from the server or update for the file on the client side
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,92 +8,34 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
+#include <inttypes.h>
 
 #define DEFAULT_SERVER_IP "127.0.0.1"
 #define PORT 12345
 #define BUFFER_SIZE 1024
-#define UPDATE_REQUEST_SIZE 2048
+#define UPDATE_REQUEST_SIZE 1024
 
-void downloadFile(int client_fd, const char *file_name);
-void updateFile(int client_fd, const char *file_name, const char *update_content);
+// Declaration of a strcucture to receive arguments for the thread function clientRequest
+typedef struct {
+    int request;                // type of request, 1 - file request, 2 - update request
+    const char* file_name;      // file name to request
+    size_t file_size;           // size of file to send to server if we request the update
+    const char* server_ip;      // server IP to request file from
+    int server_port;            // port number to connect with the server
+} ThreadArgs;
+
+// Function prototypes
 void getUserInput(int argc, char *argv[], char *file_name, char *server_ip);
+void* client_request(void* arg);
+int downloadFile(int client_fd, const char *file_name);
+int updateFile(int client_fd, const char *file_name);
 
-int main(int argc, char *argv[]) {
-    char file_name[BUFFER_SIZE];
-    char server_ip[BUFFER_SIZE];
-    char choice[10];
-    int client_fd;
-    struct sockaddr_in server_addr;
-
-     do {
-        getUserInput(argc, argv, file_name, server_ip);
-
-        if ((client_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-            perror("Socket creation failed");
-            exit(EXIT_FAILURE);
-        }
-
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(PORT);
-        if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
-            perror("Invalid address");
-            exit(EXIT_FAILURE);
-        }
-
-        if (connect(client_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-            perror("Connection failed");
-            exit(EXIT_FAILURE);
-        }
-
-        FILE *file = fopen(file_name, "rb");
-        if (file == NULL) {
-            send(client_fd, file_name, strlen(file_name), 0);
-            printf("Requesting file %s\n", file_name);
-            downloadFile(client_fd, file_name);
-        } else {
-            printf("File %s exists, checking for update on server\n", file_name);
-            fseek(file, 0, SEEK_END);
-            long client_file_size = ftell(file);
-            fseek(file, 0, SEEK_SET);
-            fclose(file);
-
-            char update_request[UPDATE_REQUEST_SIZE];
-            snprintf(update_request, sizeof(update_request), "UPDATE %s %ld", file_name, client_file_size);
-            send(client_fd, update_request, strlen(update_request), 0);
-            printf("Update for the file %s requested\n", file_name);
-
-            char response[BUFFER_SIZE];
-            ssize_t response_size = recv(client_fd, response, BUFFER_SIZE - 1, 0);
-            if (response_size <= 0) {
-                perror("Connection closed or error");
-                close(client_fd);
-                exit(EXIT_FAILURE);
-            }
-            response[response_size] = '\0';
-
-            if (strcmp(response, "NO_UPDATE") == 0) {
-                printf("No updates available from server\n");
-            } else {
-                updateFile(client_fd, file_name, response);
-            }
-        }
-
-    close(client_fd);
-    printf("Would you like to make another file request? (Yes/No): ");
-        if (fgets(choice, sizeof(choice), stdin) == NULL) {
-            perror("Input error");
-            exit(EXIT_FAILURE);
-        }
-        strtok(choice, "\n");  // Remove the newline character
-
-    } while (strcasecmp(choice, "Yes") == 0);
-
-    printf("Exiting the program.\n");
-    return 0;
-}
-
+// Function to process user inputs when starting the client application
 void getUserInput(int argc, char *argv[], char *file_name, char *server_ip) {
+    // If file name and server IP are not provided as arguments from CLI, we request the user to enter
     if (argc != 2 && argc != 3) {
+        // Getting file name
         printf("Enter file name: ");
         if (fgets(file_name, BUFFER_SIZE, stdin) == NULL) {
             perror("Input error");
@@ -99,6 +43,7 @@ void getUserInput(int argc, char *argv[], char *file_name, char *server_ip) {
         }
         strtok(file_name, "\n");
 
+        // Getting server IP
         printf("Enter server IP (default: %s): ", DEFAULT_SERVER_IP);
         if (fgets(server_ip, BUFFER_SIZE, stdin) == NULL) {
             perror("Input error");
@@ -109,10 +54,12 @@ void getUserInput(int argc, char *argv[], char *file_name, char *server_ip) {
         if (strlen(server_ip) == 0) {
             strncpy(server_ip, DEFAULT_SERVER_IP, BUFFER_SIZE - 1);
         }
-        server_ip[BUFFER_SIZE - 1] = '\0'; // Ensuring null-termination
+        server_ip[BUFFER_SIZE - 1] = '\0';  // Ensuring null-termination
     } else {
+        // Reading file name from CLI
         strncpy(file_name, argv[1], BUFFER_SIZE - 1);
         file_name[BUFFER_SIZE - 1] = '\0';
+        // Reading server IP from CLI, nothing provided - using default server IP 127.0.0.1
         if (argc == 3) {
             strncpy(server_ip, argv[2], BUFFER_SIZE - 1);
         } else {
@@ -122,66 +69,240 @@ void getUserInput(int argc, char *argv[], char *file_name, char *server_ip) {
     }
 }
 
-void downloadFile(int client_fd, const char *file_name) {
+// thread function to send client request to the server
+void* client_request(void* arg) {
+    ThreadArgs* args = (ThreadArgs*)arg;
+
+    // Creating socket
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if(sockfd == -1) {
+        perror("socket");
+        return NULL;
+    }
+
+    // Configuring socket parameters
+    struct sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(args->server_port);
+    inet_pton(AF_INET, args->server_ip, &server_address.sin_addr); // Converting IPv4 format into network format
+
+    // Connecting to server
+    if(connect(sockfd, (struct sockaddr*)&server_address, sizeof(server_address)) == -1) {
+        perror("connect");
+        return NULL;
+    }
+
+     // Constructing the request string
+     // request - type of request 1 - file request, 2 - update request
+     // file_name - file name to request
+     // file_size - 0 if file doesn't exists, file size if requesting update
+    char request_str[1024];
+    snprintf(request_str, sizeof(request_str), "%d|%s|%zu", args->request, args->file_name, args->file_size);
+    // printf("Debug: client request string: %s\n",request_str);
+
+    // Sending request to the server
+    ssize_t bytes_sent = send(sockfd, request_str, strlen(request_str), 0);
+    if(bytes_sent == -1) {
+        perror("send");
+        return NULL;
+    }
+
+    // Managing server responses
+    // If we requested the file, we call function downloadFile
+    // If we requested update for the file, we call function updateFile
+    if (args->request == 1) {
+        downloadFile(sockfd, args->file_name);
+    } else {
+        updateFile(sockfd, args->file_name);
+    }
+
+    // Closing the socket
+    close(sockfd);
+    free((char*)args->file_name);
+    free((char*)args->server_ip);
+    free(args);
+    return NULL;
+}
+
+// Function to receive file from the server
+// If file not found on the server, we get an error message
+int downloadFile(int client_fd, const char *file_name) {
     char response[BUFFER_SIZE];
     ssize_t response_size;
-
+    
+    // Getting server response 
     response_size = recv(client_fd, response, BUFFER_SIZE - 1, 0);
     if (response_size <= 0) {
         perror("Error receiving server response or connection closed");
         close(client_fd);
-        exit(EXIT_FAILURE);
-    }
+        return 1;   // Handle the connection error
+    } 
 
-    response[response_size] = '\0';
-
+    // Checking if response from the server contains error message
     if (strcmp(response, "File not found") == 0) {
         printf("Server response: %s\n", response);
-        return;
+        return 2;   // Handle the "File not found" case
     }
 
+    // Processing data from the response to get file size data
+    uint64_t file_size = 0;
+    memcpy(&file_size, response, sizeof(uint64_t));
+    file_size = be64toh(file_size); // Convert from network byte order to host byte order
+
+    // Opening file to write data received from the server
     FILE *new_file = fopen(file_name, "wb");
     if (new_file == NULL) {
         perror("File creation failed");
         close(client_fd);
-        exit(EXIT_FAILURE);
+        return 3;   // Handle the error with file creation
     }
 
-    fwrite(response, 1, response_size, new_file);
+    ssize_t total_received = 0;
+    char buffer[BUFFER_SIZE];
 
-    while ((response_size = recv(client_fd, response, BUFFER_SIZE - 1, 0)) > 0) {
-        fwrite(response, 1, response_size, new_file);
+    // Cycle to receive and write the data to the file
+    // Every iteration we compare number of received bytes with file size.
+    // If the remaining bytes to receive are less than the BUFFER_SIZE, we set bytes_to_receive to the remaining bytes. 
+    // Otherwise, we set bytes_to_receive to the BUFFER_SIZE. 
+    while (total_received < file_size) {
+        ssize_t bytes_to_receive = (file_size - total_received) < BUFFER_SIZE ? (file_size - total_received) : BUFFER_SIZE;
+        ssize_t received_bytes = recv(client_fd, buffer, bytes_to_receive, 0);
+
+        if (received_bytes <= 0) {
+            perror("Error receiving file data or connection closed");
+            fclose(new_file);
+            close(client_fd);
+            return 4;   // Handle error with invalid response from the server
+        }
+        // writing received bytes into the file
+        fwrite(buffer, 1, received_bytes, new_file);
+        total_received += received_bytes;
     }
-
-    if (response_size < 0) {
-        perror("Error receiving remaining part of file or connection closed");
-    }
-
+    // Closing file
     fclose(new_file);
     printf("File '%s' received successfully.\n", file_name);
+    return 0;   // Success
 }
 
-void updateFile(int client_fd, const char *file_name, const char *update_content) {
-    FILE *update_file = fopen(file_name, "ab");
-    if (update_file == NULL) {
-        perror("File update failed");
-        close(client_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    fwrite(update_content, 1, strlen(update_content), update_file);
-
+// Function to receive updates for the file from the server
+int updateFile(int client_fd, const char *file_name) {
     char response[BUFFER_SIZE];
-    ssize_t response_size;
-    while ((response_size = recv(client_fd, response, BUFFER_SIZE - 1, 0)) > 0) {
-        fwrite(response, 1, response_size, update_file);
-    }
+    // Getting server response
+    ssize_t response_size = recv(client_fd, response, BUFFER_SIZE - 1, 0);
+        if (response_size <= 0) {
+            perror("Connection closed or error");
+            close(client_fd);
+            return 1;
+        } else {
+            response[response_size] = '\0';     // null-terminating the string for correct processing
 
-    if (response_size < 0) {
-        perror("Error receiving remaining part of update or connection closed");
-    }
+            // Checking if server tells that no updates available 
+            if (strcmp(response, "NO_UPDATE") == 0) {
+                printf("No updates available from server\n");
+            } else {
+                // Copying data from the server response to the variable update_size
+                uint64_t update_size = 0;
+                memcpy(&update_size, response, sizeof(uint64_t));
+                // Converting update_size from network byte order to host byte order, thus we get the size of the update
+                update_size = be64toh(update_size); 
+                
+                // Opening file to append received data to the file
+                FILE *update_file = fopen(file_name, "ab");
+                if (update_file == NULL) {
+                    perror("File update failed");
+                    close(client_fd);
+                    return 2;
+                }
 
-    fclose(update_file);
-    printf("File '%s' updated successfully.\n", file_name);
+                ssize_t total_received = 0;
+                char buffer[BUFFER_SIZE];
+
+                // Cycle to receive and write the data to the file
+                // Every iteration we compare number of received bytes with update size.
+                // If the remaining bytes to receive are less than the BUFFER_SIZE, we set bytes_to_receive to the remaining bytes. 
+                // Otherwise, we set bytes_to_receive to the BUFFER_SIZE.  
+                while (total_received < update_size) {
+                ssize_t bytes_to_receive = (update_size - total_received) < BUFFER_SIZE ? (update_size - total_received) : BUFFER_SIZE;
+                ssize_t received_bytes = recv(client_fd, buffer, bytes_to_receive, 0);
+
+                    if (received_bytes <= 0) {
+                        perror("Error receiving file data or connection closed");
+                        fclose(update_file);
+                        close(client_fd);
+                        return 3;
+                    }
+                    // Writing received bytes to the file
+                    fwrite(buffer, 1, received_bytes, update_file);
+                    total_received += received_bytes;
+                }
+
+                // Closing file
+                fclose(update_file);
+                printf("File '%s' updated successfully.\n", file_name);
+            }
+        }
+    return 0;
+    
 }
 
+// Main function
+int main(int argc, char *argv[]) {
+    char file_name[BUFFER_SIZE];
+    char server_ip[BUFFER_SIZE];
+    int request = 1;    // request = 1 - file doesn't exist, request = 2 = file exists
+    int client_fd;      
+    size_t client_file_size = 0;
+    struct sockaddr_in server_addr;
+
+    // Calling function to get user input for file name and server IP
+    getUserInput(argc, argv, file_name, server_ip);
+
+    // Checking if requested file exists on the client side
+    FILE *file = fopen(file_name, "rb");
+        if (file == NULL) {
+            // File doesn't exist
+            request = 1;
+            client_file_size = 0;
+            printf("Requesting file %s\n", file_name);
+        } else {
+            // File exists, calculating the file size to check if update is available from the server
+            request = 2;
+            fseek(file, 0, SEEK_END);
+            client_file_size = ftell(file);
+            fseek(file, 0, SEEK_SET);
+            fclose(file);
+            printf("Requesting the update for the file %s\n", file_name);
+        }
+
+    pthread_t client_thread;
+   
+    // Allocating memory for the thread function arguments structure 
+    ThreadArgs* args = malloc(sizeof(ThreadArgs));
+    if (args == NULL) {
+        perror("malloc");
+        return 1;
+    }
+
+    args->request = request;               // request typoe (1 - file download, 2 - file update request)
+    args->file_name = strdup(file_name);   // file name
+    args->file_size = client_file_size;    //file size
+    args->server_ip = strdup(server_ip);   // server IP
+    args->server_port = PORT;              // server port
+
+    // Checking if memory was allocated
+    if (args == NULL) {
+        perror("malloc");
+        return 1;
+    }
+
+    // Creating thread to call function clientRequest
+    int result = pthread_create(&client_thread, NULL, client_request, args);
+    if (result) {
+        fprintf(stderr, "Error creating thread: %d\n", result);
+        return 1;
+    }
+
+    pthread_join(client_thread, NULL);
+    free(args);
+    return 0;
+}
